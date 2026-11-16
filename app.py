@@ -282,4 +282,7 @@ with tab_patient:
         st.subheader("💌 護理師衛教關懷紀錄")
         conn = get_conn()
         care_df = pd.read_sql_query(
-            "SELECT reviewed_at AS 時間
+           '''SELECT reviewed_at AS 時間, nurse_name AS 護理師, edu_template AS 衛教主題, nurse_note AS 處置與建議 
+               FROM alerts WHERE patient_name = ? AND status = '已審核' ORDER BY id DESC''',
+            conn, params=(selected_patient,)
+        )
