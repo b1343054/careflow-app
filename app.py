@@ -10,20 +10,22 @@ st.set_page_config(page_title="CareFlow 慢性病衛教追蹤系統", page_icon=
 # 初始化資料庫
 init_db()
 
-# 初始化登入狀態
+# 初始化登入與暫存確認狀態
 if "patient_auth" not in st.session_state:
     st.session_state.patient_auth = {}
 if "nurse_auth" not in st.session_state:
     st.session_state.nurse_auth = False
 if "pending_submit" not in st.session_state:
     st.session_state.pending_submit = None
+if "pending_register" not in st.session_state:
+    st.session_state.pending_register = None
 
 st.title("🩺 CareFlow 慢性病衛教與居家量測追蹤審核系統")
-st.caption("第 8 組｜支援雙端密碼驗證（Enter快速登入）、新增病患建檔、資料編輯、送出前最終確認防呆與全病患量表檢視")
+st.caption("第 8 組｜支援雙端密碼驗證（Enter快速登入）、建檔與量測雙重確認防呆、BR-01 異常置頂、BR-02 逾期追蹤與 BR-03 審核防呆")
 
 tab_patient, tab_nurse, tab_edu = st.tabs([
-    "👤 病患／家屬端（密碼登入與量測上傳）",
-    "👩‍⚕️ 診所衛教護理師端（密碼登入與全病患追蹤）",
+    "👤 病患／家屬端（建檔、登入與量測）",
+    "👩‍⚕️ 診所衛教護理師端（警訊審核、逾期名單與全病患追蹤）",
     "📚 衛教小百科（視覺化圖卡指南）"
 ])
 
@@ -36,9 +38,9 @@ with tab_patient:
     conn = get_connection()
     patients_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
 
-    # 新增自己的病患建檔區塊
-    with st.expander("➕ 找不到名字？點此註冊新增病患檔案", expanded=False):
-        with st.form("register_patient_form", clear_on_submit=True):
+    # 新增自己的病患建檔區塊（含建檔確認單）
+    with st.expander("➕ 找不到名字？點此註冊新增病患檔案", expanded=bool(st.session_state.pending_register)):
+        with st.form("register_patient_form", clear_on_submit=False):
             st.markdown("填寫基本資料後，即可使用您設定的「出生年月日（8碼）」作為登入密碼：")
             r1, r2, r3 = st.columns(3)
             reg_name = r1.text_input("病患姓名 *", placeholder="例如：黃爺爺")
@@ -50,15 +52,14 @@ with tab_patient:
             reg_cond = r5.selectbox("主要慢性病追蹤項目 *", ["高血壓", "第二型糖尿病", "高血壓＋高血脂", "高血壓＋糖尿病", "糖尿病前期", "一般慢性病追蹤"])
             reg_phone = r6.text_input("聯絡電話", placeholder="例如：0911-222-333")
 
-            reg_submit = st.form_submit_button("✅ 完成建檔並加入選單", type="primary", use_container_width=True)
-            if reg_submit:
+            reg_pre_btn = st.form_submit_button("下一步：核對建檔資料", type="primary", use_container_width=True)
+            if reg_pre_btn:
                 if not reg_name.strip():
                     st.error("❌ 請輸入病患姓名！")
                 elif len(reg_birth.strip()) != 8 or not reg_birth.strip().isdigit():
                     st.error("❌ 出生年月日密碼必須為 8 碼純數字（例如 19600315）！")
                 else:
                     cur = conn.cursor()
-                    # 自動產生下一個病患編號 (例如 P005, P006...)
                     max_row = cur.execute("SELECT patient_id FROM patients ORDER BY patient_id DESC LIMIT 1").fetchone()
                     if max_row and max_row[0].startswith("P"):
                         next_num = int(max_row[0][1:]) + 1
@@ -66,13 +67,48 @@ with tab_patient:
                         next_num = len(patients_df) + 1
                     new_pid = f"P{next_num:03d}"
 
-                    cur.execute(
-                        "INSERT INTO patients (patient_id, name, birth_date, age, gender, condition_type, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (new_pid, reg_name.strip(), reg_birth.strip(), int(reg_age), reg_gender, reg_cond, reg_phone.strip() or "未填寫")
-                    )
-                    conn.commit()
-                    st.success(f"🎉 已成功新增病患「{new_pid} - {reg_name.strip()}」！請直接從下方選單選擇並輸入密碼進入。")
-                    st.rerun()
+                    st.session_state.pending_register = {
+                        "patient_id": new_pid,
+                        "name": reg_name.strip(),
+                        "birth_date": reg_birth.strip(),
+                        "age": int(reg_age),
+                        "gender": reg_gender,
+                        "condition_type": reg_cond,
+                        "phone": reg_phone.strip() if reg_phone.strip() else "未填寫"
+                    }
+
+        # 建檔最終確認單
+        if st.session_state.pending_register:
+            rdata = st.session_state.pending_register
+            with st.container(border=True):
+                st.warning("📋 **病患建檔確認單：請核對以下基本資料與登入密碼是否正確**")
+                reg_lines = [
+                    f"- **系統配發編號：** `{rdata['patient_id']}`",
+                    f"- **病患姓名：** **{rdata['name']}**（{rdata['gender']}，{rdata['age']} 歲）",
+                    f"- **登入密碼（出生年月日）：** **`{rdata['birth_date']}`**（請務必牢記此 8 碼密碼）",
+                    f"- **主要追蹤慢性病別：** `{rdata['condition_type']}`",
+                    f"- **聯絡電話：** {rdata['phone']}"
+                ]
+                st.markdown(NL.join(reg_lines))
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if st.button("✅ 確認資料無誤，完成建檔並登入", type="primary", use_container_width=True):
+                        cur = conn.cursor()
+                        cur.execute(
+                            "INSERT INTO patients (patient_id, name, birth_date, age, gender, condition_type, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (rdata["patient_id"], rdata["name"], rdata["birth_date"], rdata["age"],
+                             rdata["gender"], rdata["condition_type"], rdata["phone"])
+                        )
+                        conn.commit()
+                        # 自動登入並將下拉選單切換至該新病患
+                        st.session_state.patient_auth[rdata["patient_id"]] = True
+                        st.session_state.pat_select = f"{rdata['patient_id']} - {rdata['name']} ({rdata['condition_type']})"
+                        st.session_state.pending_register = None
+                        st.rerun()
+                with rc2:
+                    if st.button("↩️ 返回修改建檔資料", use_container_width=True):
+                        st.session_state.pending_register = None
+                        st.rerun()
 
     # 重新讀取最新病患清單
     patients_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
@@ -91,7 +127,6 @@ with tab_patient:
         st.warning(f"🔒 為保護個人健康隱私，進入「{p_info['name']}」的資料與量測介面前，請先輸入出生年月日進行驗證。")
         col_login, _ = st.columns([1, 1.5])
         with col_login:
-            # 使用 st.form 讓使用者輸入完直接按鍵盤 Enter 即可送出驗證
             with st.form(f"pat_login_form_{selected_pid}"):
                 st.markdown(f"**測試提示（Demo 用）：** `{p_info['name']}` 的出生年月日密碼為 **`{p_info['birth_date']}`**")
                 pwd_input = st.text_input("請輸入出生年月日（8碼，輸入後可直接按 Enter）", type="password")
@@ -105,7 +140,7 @@ with tab_patient:
     else:
         top_bar1, top_bar2 = st.columns([4, 1])
         with top_bar1:
-            st.success(f"✅ 已驗證身分：**{p_info['name']}**（{p_info['gender']}，{p_info['age']} 歲｜追蹤項目：{p_info['condition_type']}）")
+            st.success(f"✅ 已驗證身分：**{p_info['name']}**（{p_info['gender']}，{p_info['age']} 歲｜追蹤項目：{p_info['condition_type']}｜電話：{p_info['phone']}）")
         with top_bar2:
             if st.button("🚪 登出鎖定", key="pat_logout", use_container_width=True):
                 st.session_state.patient_auth[selected_pid] = False
@@ -218,8 +253,26 @@ with tab_patient:
                             st.rerun()
 
         with col_right:
-            st.subheader(f"📊 {p_info['name']} 的歷史健康趨勢與醫護衛教回饋")
+            st.subheader(f"📊 {p_info['name']} 的健康指標燈號與歷史趨勢")
 
+            m_df = pd.read_sql_query(
+                """SELECT record_id, record_date AS 量測日期, systolic AS 收縮壓, diastolic AS 舒張壓,
+                          pulse AS 脈搏, blood_sugar AS 空腹血糖, symptoms AS 症狀
+                   FROM measurements WHERE patient_id = ? ORDER BY record_date ASC, record_id ASC""",
+                conn, params=(selected_pid,)
+            )
+
+            # 最新一筆量測健康紅黃綠燈提示
+            if not m_df.empty:
+                latest = m_df.iloc[-1]
+                bp_status = "🔴 偏高警戒 (>140)" if latest["收縮壓"] > 140 else ("🟡 略高注意" if latest["收縮壓"] >= 120 else "🟢 理想正常")
+                bs_status = "🔴 偏高警戒 (>130)" if latest["空腹血糖"] > 130 else ("🟡 略高注意" if latest["空腹血糖"] >= 100 else "🟢 理想正常")
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("最新收縮壓 / 舒張壓", f"{latest['收縮壓']} / {latest['舒張壓']} mmHg", bp_status, delta_color="off")
+                mc2.metric("最新空腹血糖", f"{latest['空腹血糖']} mg/dL", bs_status, delta_color="off")
+                mc3.metric("最新脈搏", f"{latest['脈搏']} 次/分", f"日期：{latest['量測日期']}", delta_color="off")
+
+            # 護理師最新衛教回饋
             care_df = pd.read_sql_query(
                 """SELECT trigger_date, edu_template_title, nurse_note, reviewed_by, reviewed_at
                    FROM health_alerts
@@ -239,13 +292,6 @@ with tab_patient:
                     ]
                     st.info(NL.join(care_lines))
 
-            m_df = pd.read_sql_query(
-                """SELECT record_id, record_date AS 量測日期, systolic AS 收縮壓, diastolic AS 舒張壓,
-                          pulse AS 脈搏, blood_sugar AS 空腹血糖, symptoms AS 症狀
-                   FROM measurements WHERE patient_id = ? ORDER BY record_date ASC, record_id ASC""",
-                conn, params=(selected_pid,)
-            )
-
             if not m_df.empty:
                 fig = px.line(
                     m_df, x="量測日期", y=["收縮壓", "舒張壓", "空腹血糖"],
@@ -258,19 +304,18 @@ with tab_patient:
                 st.markdown("#### 📋 個人歷史量測明細（已送出鎖定唯讀）")
                 st.dataframe(m_df.iloc[::-1].drop(columns=["record_id"]), use_container_width=True, hide_index=True)
             else:
-                st.info("目前尚無歷史量測紀錄，請從左側表單新增第一筆數據。")
+                st.info("目前尚無歷史量測紀錄，請從左側表單新增第一筆數據！")
 
     conn.close()
 
 # ==========================================
-# 2. 診所衛教護理師端（含密碼鎖定 + Enter登入 + 全病患量表觀測）
+# 2. 診所衛教護理師端（密碼鎖定 + BR-01 審核 + BR-02 逾期清單 + 全病患觀測）
 # ==========================================
 with tab_nurse:
     if not st.session_state.nurse_auth:
         st.warning("🔒 診所衛教護理師後台受醫護權限保護，請先輸入護理師端登入密碼。")
         col_n1, _ = st.columns([1, 1.5])
         with col_n1:
-            # 使用 st.form 讓護理師輸入完直接按鍵盤 Enter 即可登入
             with st.form("nurse_login_form"):
                 st.markdown("**測試提示（Demo 用）：** 護理師端預設密碼為 **`care2026`**")
                 nurse_pwd = st.text_input("請輸入護理師後台密碼（輸入後可直接按 Enter）", type="password")
@@ -291,80 +336,100 @@ with tab_nurse:
                 st.rerun()
 
         conn = get_connection()
+        all_p_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
+        today_str = date.today().isoformat()
 
-        # 上半部：高風險待審核警訊
-        st.subheader("🚨 一、待審核高風險異常警訊（依 BR-01 自動置頂）")
-        alerts_df = pd.read_sql_query(
-            """SELECT a.alert_id, a.patient_id, p.name AS patient_name, p.age, p.condition_type,
-                      a.trigger_date, a.reason, a.alert_status
-               FROM health_alerts a
-               JOIN patients p ON a.patient_id = p.patient_id
-               WHERE a.alert_status = '待審核'
-               ORDER BY a.alert_id DESC""",
-            conn
-        )
-        templates_df = pd.read_sql_query("SELECT * FROM edu_templates", conn)
-        template_map = {f"[{r['category']}] {r['title']}": r['content'] for _, r in templates_df.iterrows()}
+        # 上半部：左邊待審核警訊、右邊 BR-02 今日逾時未上傳名單
+        col_alert_main, col_overdue = st.columns([2.2, 1], gap="large")
 
-        if alerts_df.empty:
-            st.info("🎉 目前所有高風險異常警訊皆已審核完畢！")
-        else:
-            for _, arow in alerts_df.iterrows():
-                with st.expander(f"🔴 【高風險置頂】{arow['patient_name']}（{arow['age']}歲｜{arow['condition_type']}）— {arow['reason']}", expanded=True):
-                    c_hist, c_act = st.columns([1.3, 1])
-                    with c_hist:
-                        st.markdown("**近期量測數據明細：**")
-                        sub_m = pd.read_sql_query(
-                            """SELECT record_date AS 日期, systolic AS 收縮壓, diastolic AS 舒張壓,
-                                      pulse AS 脈搏, blood_sugar AS 空腹血糖, symptoms AS 症狀
-                               FROM measurements WHERE patient_id = ? ORDER BY record_date DESC, record_id DESC LIMIT 7""",
-                            conn, params=(arow["patient_id"],)
-                        )
-                        st.dataframe(sub_m, use_container_width=True, hide_index=True)
+        with col_alert_main:
+            st.subheader("🚨 一、待審核高風險異常警訊（BR-01 置頂）")
+            alerts_df = pd.read_sql_query(
+                """SELECT a.alert_id, a.patient_id, p.name AS patient_name, p.age, p.condition_type,
+                          a.trigger_date, a.reason, a.alert_status
+                   FROM health_alerts a
+                   JOIN patients p ON a.patient_id = p.patient_id
+                   WHERE a.alert_status = '待審核'
+                   ORDER BY a.alert_id DESC""",
+                conn
+            )
+            templates_df = pd.read_sql_query("SELECT * FROM edu_templates", conn)
+            template_map = {f"[{r['category']}] {r['title']}": r['content'] for _, r in templates_df.iterrows()}
 
-                    with c_act:
-                        st.markdown("**衛教處置與結案審核（BR-03 必填防呆）：**")
-                        chosen_tpl = st.selectbox(
-                            "快速套用標準衛教範本 (FR-05)",
-                            ["（自行輸入衛教建議）"] + list(template_map.keys()),
-                            key=f"tpl_{arow['alert_id']}"
-                        )
-                        default_note = template_map.get(chosen_tpl, "")
-                        nurse_note = st.text_area(
-                            "處置紀錄與衛教建議（必填）*",
-                            value=default_note,
-                            height=100,
-                            key=f"note_{arow['alert_id']}"
-                        )
-                        if st.button("✅ 完成審核並同步至病患端", key=f"btn_{arow['alert_id']}", type="primary"):
-                            if not nurse_note.strip():
-                                st.error("⛔ 違反業務規則 BR-03：請先填寫處置紀錄，不允許直接關閉警訊！")
-                            else:
-                                cur = conn.cursor()
-                                curr_status = cur.execute(
-                                    "SELECT alert_status FROM health_alerts WHERE alert_id = ?",
-                                    (int(arow["alert_id"]),)
-                                ).fetchone()[0]
-                                if curr_status != "待審核":
-                                    st.warning("⚠️ 此警訊已由其他護理師搶先審核結案！")
+            if alerts_df.empty:
+                st.info("🎉 目前所有高風險異常警訊皆已審核完畢！")
+            else:
+                for _, arow in alerts_df.iterrows():
+                    with st.expander(f"🔴 【高風險置頂】{arow['patient_name']}（{arow['age']}歲｜{arow['condition_type']}）— {arow['reason']}", expanded=True):
+                        c_hist, c_act = st.columns([1.2, 1])
+                        with c_hist:
+                            st.markdown("**近期量測數據明細：**")
+                            sub_m = pd.read_sql_query(
+                                """SELECT record_date AS 日期, systolic AS 收縮壓, diastolic AS 舒張壓,
+                                          pulse AS 脈搏, blood_sugar AS 空腹血糖, symptoms AS 症狀
+                                   FROM measurements WHERE patient_id = ? ORDER BY record_date DESC, record_id DESC LIMIT 7""",
+                                conn, params=(arow["patient_id"],)
+                            )
+                            st.dataframe(sub_m, use_container_width=True, hide_index=True)
+
+                        with c_act:
+                            st.markdown("**衛教處置與結案審核（BR-03 必填防呆）：**")
+                            chosen_tpl = st.selectbox(
+                                "快速套用標準衛教範本 (FR-05)",
+                                ["（自行輸入衛教建議）"] + list(template_map.keys()),
+                                key=f"tpl_{arow['alert_id']}"
+                            )
+                            default_note = template_map.get(chosen_tpl, "")
+                            nurse_note = st.text_area(
+                                "處置紀錄與衛教建議（必填）*",
+                                value=default_note,
+                                height=95,
+                                key=f"note_{arow['alert_id']}"
+                            )
+                            if st.button("✅ 完成審核並同步至病患端", key=f"btn_{arow['alert_id']}", type="primary"):
+                                if not nurse_note.strip():
+                                    st.error("⛔ 違反業務規則 BR-03：請先填寫處置紀錄，不允許直接關閉警訊！")
                                 else:
-                                    tpl_title = chosen_tpl if chosen_tpl != "（自行輸入衛教建議）" else "個別化衛教建議"
-                                    cur.execute(
-                                        """UPDATE health_alerts
-                                           SET alert_status = '已審核', edu_template_title = ?, nurse_note = ?,
-                                               reviewed_by = '李護理師', reviewed_at = ?
-                                           WHERE alert_id = ?""",
-                                        (tpl_title, nurse_note.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"), int(arow["alert_id"]))
-                                    )
-                                    conn.commit()
-                                    st.success("已結案並同步顯示於病患端網頁！")
-                                    st.rerun()
+                                    cur = conn.cursor()
+                                    curr_status = cur.execute(
+                                        "SELECT alert_status FROM health_alerts WHERE alert_id = ?",
+                                        (int(arow["alert_id"]),)
+                                    ).fetchone()[0]
+                                    if curr_status != "待審核":
+                                        st.warning("⚠️ 此警訊已由其他護理師搶先審核結案！")
+                                    else:
+                                        tpl_title = chosen_tpl if chosen_tpl != "（自行輸入衛教建議）" else "個別化衛教建議"
+                                        cur.execute(
+                                            """UPDATE health_alerts
+                                               SET alert_status = '已審核', edu_template_title = ?, nurse_note = ?,
+                                                   reviewed_by = '李護理師', reviewed_at = ?
+                                               WHERE alert_id = ?""",
+                                            (tpl_title, nurse_note.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"), int(arow["alert_id"]))
+                                        )
+                                        conn.commit()
+                                        st.success("已結案並同步顯示於病患端網頁！")
+                                        st.rerun()
+
+        with col_overdue:
+            st.subheader("⏰ 今日未上傳名單 (BR-02)")
+            uploaded_today = pd.read_sql_query(
+                "SELECT DISTINCT patient_id FROM measurements WHERE record_date = ?",
+                conn, params=(today_str,)
+            )["patient_id"].tolist()
+
+            overdue_df = all_p_df[~all_p_df["patient_id"].isin(uploaded_today)]
+            st.metric(f"今日 ({today_str}) 應上傳人數", f"{len(all_p_df)} 人", f"尚未上傳：{len(overdue_df)} 人", delta_color="inverse")
+
+            if overdue_df.empty:
+                st.success("✅ 今日所有病患皆已完成上傳！")
+            else:
+                for _, orow in overdue_df.iterrows():
+                    st.warning(f"⚠️ **{orow['patient_id']} {orow['name']}**（{orow['condition_type']}）\n\n電話：{orow['phone']}")
 
         st.divider()
 
-        # 下半部：選擇並觀測所有病患的量表數據
+        # 中段：全病患健康量表觀測與主動關懷
         st.subheader("🔍 二、全病患健康量表觀測與主動關懷（可選擇任一病患）")
-        all_p_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
         obs_options = {
             f"{r['patient_id']} - {r['name']}（{r['age']}歲｜{r['condition_type']}）": r['patient_id']
             for _, r in all_p_df.iterrows()
@@ -408,11 +473,27 @@ with tab_nurse:
                         cur.execute(
                             """INSERT INTO health_alerts (patient_id, trigger_date, reason, alert_status, edu_template_title, nurse_note, reviewed_by, reviewed_at)
                                VALUES (?, ?, '護理師主動定期關懷', '已審核', '定期追蹤關懷建議', ?, '李護理師', ?)""",
-                            (obs_pid, date.today().isoformat(), p_note.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"))
+                            (obs_pid, today_str, p_note.strip(), datetime.now().strftime("%Y-%m-%d %H:%M"))
                         )
                         conn.commit()
                         st.success(f"已發送關懷建議給 {obs_info['name']}！")
                         st.rerun()
+
+        # 下半部：已審核歷史紀錄留存
+        with st.expander("📁 查看歷史已審核與衛教關懷發送紀錄", expanded=False):
+            done_df = pd.read_sql_query(
+                """SELECT a.reviewed_at AS 審核時間, p.name AS 病患姓名, a.reason AS 觸發原因,
+                          a.edu_template_title AS 衛教主題, a.nurse_note AS 處置建議, a.reviewed_by AS 審核護理師
+                   FROM health_alerts a
+                   JOIN patients p ON a.patient_id = p.patient_id
+                   WHERE a.alert_status = '已審核'
+                   ORDER BY a.reviewed_at DESC""",
+                conn
+            )
+            if done_df.empty:
+                st.info("尚無已審核紀錄。")
+            else:
+                st.dataframe(done_df, use_container_width=True, hide_index=True)
 
         conn.close()
 
