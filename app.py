@@ -19,7 +19,7 @@ if "pending_submit" not in st.session_state:
     st.session_state.pending_submit = None
 
 st.title("🩺 CareFlow 慢性病衛教與居家量測追蹤審核系統")
-st.caption("第 8 組｜支援雙端密碼驗證、病患資料編輯、送出前最終確認防呆、護理師全病患量表檢視與視覺化衛教圖卡")
+st.caption("第 8 組｜支援雙端密碼驗證（Enter快速登入）、新增病患建檔、資料編輯、送出前最終確認防呆與全病患量表檢視")
 
 tab_patient, tab_nurse, tab_edu = st.tabs([
     "👤 病患／家屬端（密碼登入與量測上傳）",
@@ -36,6 +36,46 @@ with tab_patient:
     conn = get_connection()
     patients_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
 
+    # 新增自己的病患建檔區塊
+    with st.expander("➕ 找不到名字？點此註冊新增病患檔案", expanded=False):
+        with st.form("register_patient_form", clear_on_submit=True):
+            st.markdown("填寫基本資料後，即可使用您設定的「出生年月日（8碼）」作為登入密碼：")
+            r1, r2, r3 = st.columns(3)
+            reg_name = r1.text_input("病患姓名 *", placeholder="例如：黃爺爺")
+            reg_birth = r2.text_input("出生年月日（8碼登入密碼）*", placeholder="例如：19600315")
+            reg_age = r3.number_input("年齡 *", min_value=1, max_value=120, value=65)
+
+            r4, r5, r6 = st.columns(3)
+            reg_gender = r4.selectbox("性別", ["男", "女", "其他"])
+            reg_cond = r5.selectbox("主要慢性病追蹤項目 *", ["高血壓", "第二型糖尿病", "高血壓＋高血脂", "高血壓＋糖尿病", "糖尿病前期", "一般慢性病追蹤"])
+            reg_phone = r6.text_input("聯絡電話", placeholder="例如：0911-222-333")
+
+            reg_submit = st.form_submit_button("✅ 完成建檔並加入選單", type="primary", use_container_width=True)
+            if reg_submit:
+                if not reg_name.strip():
+                    st.error("❌ 請輸入病患姓名！")
+                elif len(reg_birth.strip()) != 8 or not reg_birth.strip().isdigit():
+                    st.error("❌ 出生年月日密碼必須為 8 碼純數字（例如 19600315）！")
+                else:
+                    cur = conn.cursor()
+                    # 自動產生下一個病患編號 (例如 P005, P006...)
+                    max_row = cur.execute("SELECT patient_id FROM patients ORDER BY patient_id DESC LIMIT 1").fetchone()
+                    if max_row and max_row[0].startswith("P"):
+                        next_num = int(max_row[0][1:]) + 1
+                    else:
+                        next_num = len(patients_df) + 1
+                    new_pid = f"P{next_num:03d}"
+
+                    cur.execute(
+                        "INSERT INTO patients (patient_id, name, birth_date, age, gender, condition_type, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (new_pid, reg_name.strip(), reg_birth.strip(), int(reg_age), reg_gender, reg_cond, reg_phone.strip() or "未填寫")
+                    )
+                    conn.commit()
+                    st.success(f"🎉 已成功新增病患「{new_pid} - {reg_name.strip()}」！請直接從下方選單選擇並輸入密碼進入。")
+                    st.rerun()
+
+    # 重新讀取最新病患清單
+    patients_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
     patient_options = {
         f"{row['patient_id']} - {row['name']} ({row['condition_type']})": row['patient_id']
         for _, row in patients_df.iterrows()
@@ -51,10 +91,12 @@ with tab_patient:
         st.warning(f"🔒 為保護個人健康隱私，進入「{p_info['name']}」的資料與量測介面前，請先輸入出生年月日進行驗證。")
         col_login, _ = st.columns([1, 1.5])
         with col_login:
-            with st.container(border=True):
-                st.markdown(f"**測試提示（Demo 用）：** `{p_info['name']}` 的預設出生年月日密碼為 **`{p_info['birth_date']}`**")
-                pwd_input = st.text_input("請輸入出生年月日（8碼，例如 19580512）", type="password", key=f"pwd_{selected_pid}")
-                if st.button("驗證並進入系統", type="primary", use_container_width=True):
+            # 使用 st.form 讓使用者輸入完直接按鍵盤 Enter 即可送出驗證
+            with st.form(f"pat_login_form_{selected_pid}"):
+                st.markdown(f"**測試提示（Demo 用）：** `{p_info['name']}` 的出生年月日密碼為 **`{p_info['birth_date']}`**")
+                pwd_input = st.text_input("請輸入出生年月日（8碼，輸入後可直接按 Enter）", type="password")
+                login_btn = st.form_submit_button("驗證並進入系統", type="primary", use_container_width=True)
+                if login_btn:
                     if pwd_input.strip() == str(p_info["birth_date"]):
                         st.session_state.patient_auth[selected_pid] = True
                         st.rerun()
@@ -221,17 +263,19 @@ with tab_patient:
     conn.close()
 
 # ==========================================
-# 2. 診所衛教護理師端（含密碼鎖定 + 全病患量表觀測）
+# 2. 診所衛教護理師端（含密碼鎖定 + Enter登入 + 全病患量表觀測）
 # ==========================================
 with tab_nurse:
     if not st.session_state.nurse_auth:
         st.warning("🔒 診所衛教護理師後台受醫護權限保護，請先輸入護理師端登入密碼。")
         col_n1, _ = st.columns([1, 1.5])
         with col_n1:
-            with st.container(border=True):
+            # 使用 st.form 讓護理師輸入完直接按鍵盤 Enter 即可登入
+            with st.form("nurse_login_form"):
                 st.markdown("**測試提示（Demo 用）：** 護理師端預設密碼為 **`care2026`**")
-                nurse_pwd = st.text_input("請輸入護理師後台密碼", type="password", key="nurse_pwd_input")
-                if st.button("登入護理師後台", type="primary", use_container_width=True):
+                nurse_pwd = st.text_input("請輸入護理師後台密碼（輸入後可直接按 Enter）", type="password")
+                n_login_btn = st.form_submit_button("登入護理師後台", type="primary", use_container_width=True)
+                if n_login_btn:
                     if nurse_pwd.strip() == "care2026":
                         st.session_state.nurse_auth = True
                         st.rerun()
