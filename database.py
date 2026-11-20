@@ -1,7 +1,7 @@
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
-DB_PATH = "careflow.db"
+DB_PATH = "careflow_v4.db"
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -12,11 +12,12 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
-    # 1. 病患資料表 (Patient)
+    # 1. 病患資料表 (新增 birth_date 作為病人登入密碼)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS patients (
         patient_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
+        birth_date TEXT NOT NULL,
         age INTEGER NOT NULL,
         gender TEXT,
         condition_type TEXT NOT NULL,
@@ -25,7 +26,7 @@ def init_db():
     )
     """)
 
-    # 2. 量測紀錄資料表 (Measurement)
+    # 2. 量測紀錄資料表
     cur.execute("""
     CREATE TABLE IF NOT EXISTS measurements (
         record_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +41,7 @@ def init_db():
     )
     """)
 
-    # 3. 異常警訊資料表 (HealthAlert)
+    # 3. 異常警訊資料表
     cur.execute("""
     CREATE TABLE IF NOT EXISTS health_alerts (
         alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +57,7 @@ def init_db():
     )
     """)
 
-    # 4. 衛教範本資料表 (EduTemplate)
+    # 4. 衛教範本資料表
     cur.execute("""
     CREATE TABLE IF NOT EXISTS edu_templates (
         template_id TEXT PRIMARY KEY,
@@ -66,46 +67,28 @@ def init_db():
     )
     """)
 
-    # 5. 衛教護理師資料表 (Nurse)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS nurses (
-        nurse_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        department TEXT NOT NULL
-    )
-    """)
-
     conn.commit()
     seed_initial_data(conn)
     conn.close()
 
 def seed_initial_data(conn):
     cur = conn.cursor()
-    # 檢查是否已有病患資料，避免重複塞入
     cur.execute("SELECT COUNT(*) FROM patients")
     if cur.fetchone()[0] > 0:
         return
 
-    # 預設病患名單（含不同慢性病類型供病人端選擇讀取）
+    # 預設病患（含出生年月日作為登入密碼，格式 YYYYMMDD）
     patients = [
-        ("P001", "陳伯伯", 68, "男", "高血壓", "0912-345-678"),
-        ("P002", "林阿姨", 62, "女", "第二型糖尿病", "0923-456-789"),
-        ("P003", "王先生", 55, "男", "高血壓＋高血脂", "0934-567-890"),
-        ("P004", "張奶奶", 74, "女", "高血壓＋糖尿病", "0945-678-901"),
+        ("P001", "陳伯伯", "19580512", 68, "男", "高血壓", "0912-345-678"),
+        ("P002", "林阿姨", "19640823", 62, "女", "第二型糖尿病", "0923-456-789"),
+        ("P003", "王先生", "19711104", 55, "男", "高血壓＋高血脂", "0934-567-890"),
+        ("P004", "張奶奶", "19520219", 74, "女", "高血壓＋糖尿病", "0945-678-901"),
     ]
     cur.executemany(
-        "INSERT INTO patients (patient_id, name, age, gender, condition_type, phone) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO patients (patient_id, name, birth_date, age, gender, condition_type, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
         patients
     )
 
-    # 預設衛教護理師
-    nurses = [
-        ("N001", "李護理師", "慢性病衛教中心"),
-        ("N002", "周個管師", "代謝症候群照護門診"),
-    ]
-    cur.executemany("INSERT INTO nurses (nurse_id, name, department) VALUES (?, ?, ?)", nurses)
-
-    # 預設標準衛教範本 (FR-05)
     templates = [
         ("T01", "高血壓飲食", "低鈉得舒飲食衛教", "建議每日鈉攝取低於 2400mg（約 6 克鹽），減少湯汁、醃漬物與加工食品，多攝取深綠色蔬菜與高鉀水果。"),
         ("T02", "血糖控制", "空腹血糖偏高照護指引", "建議調整晚餐精緻澱粉比例，飯後 30 分鐘進行 15~20 分鐘溫和散步，並留意是否有頭暈或口渴症狀。"),
@@ -113,22 +96,17 @@ def seed_initial_data(conn):
     ]
     cur.executemany("INSERT INTO edu_templates (template_id, category, title, content) VALUES (?, ?, ?, ?)", templates)
 
-    # 預設歷史量測紀錄（讓病人端一打開就有 7 天趨勢圖與測試數據可讀）
     today = date.today()
     sample_measurements = [
-        # 陳伯伯：連續 3 天收縮壓 > 140（供演示 BR-01 高風險警訊）
         ("P001", (today - timedelta(days=4)).isoformat(), 132, 84, 72, 102, "無不適"),
         ("P001", (today - timedelta(days=3)).isoformat(), 136, 86, 74, 105, "無不適"),
         ("P001", (today - timedelta(days=2)).isoformat(), 145, 91, 78, 108, "偶爾肩頸緊繃"),
         ("P001", (today - timedelta(days=1)).isoformat(), 149, 94, 80, 110, "輕微頭脹"),
         ("P001", today.isoformat(), 152, 95, 79, 112, "早上起床微頭暈"),
-        # 林阿姨：平穩控制中
         ("P002", (today - timedelta(days=2)).isoformat(), 124, 78, 70, 118, "無不適"),
         ("P002", (today - timedelta(days=1)).isoformat(), 122, 76, 68, 121, "無不適"),
         ("P002", today.isoformat(), 126, 79, 71, 116, "精神良好"),
-        # 王先生：昨日數據
         ("P003", (today - timedelta(days=1)).isoformat(), 138, 88, 75, 114, "熬夜加班"),
-        # 張奶奶：空腹血糖偏高
         ("P004", (today - timedelta(days=2)).isoformat(), 135, 82, 73, 138, "口渴"),
         ("P004", (today - timedelta(days=1)).isoformat(), 139, 85, 74, 142, "疲倦"),
     ]
@@ -137,15 +115,9 @@ def seed_initial_data(conn):
         sample_measurements
     )
 
-    # 預設一筆陳伯伯的待審核警訊
     cur.execute(
-        """INSERT INTO health_alerts (patient_id, trigger_date, reason, alert_status)
-           VALUES (?, ?, ?, ?)""",
+        "INSERT INTO health_alerts (patient_id, trigger_date, reason, alert_status) VALUES (?, ?, ?, ?)",
         ("P001", today.isoformat(), "連續 3 天收縮壓 > 140 mmHg（145 / 149 / 152）", "待審核")
     )
 
     conn.commit()
-
-if __name__ == "__main__":
-    init_db()
-    print("CareFlow 資料庫初始化完成！")
