@@ -27,6 +27,8 @@ tab_patient, tab_nurse, tab_edu = st.tabs([
     "📚 衛教小百科（視覺化圖卡指南）"
 ])
 
+NL = chr(10)
+
 # ==========================================
 # 1. 病患／家屬端
 # ==========================================
@@ -34,7 +36,10 @@ with tab_patient:
     conn = get_connection()
     patients_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
 
-    patient_options = {f"{row['patient_id']} - {row['name']} ({row['condition_type']})": row['patient_id'] for _, row in patients_df.iterrows()}
+    patient_options = {
+        f"{row['patient_id']} - {row['name']} ({row['condition_type']})": row['patient_id']
+        for _, row in patients_df.iterrows()
+    }
     selected_label = st.selectbox("請選擇病患身分", list(patient_options.keys()), key="pat_select")
     selected_pid = patient_options[selected_label]
     p_info = patients_df[patients_df["patient_id"] == selected_pid].iloc[0]
@@ -120,19 +125,15 @@ with tab_patient:
                 data = st.session_state.pending_submit
                 with st.container(border=True):
                     st.error("⚠️ **最終確認：請確認資料是否正確，送出後無法修改！**")
-                    st.markdown(
-                        f"- **病患姓名：** {data['patient_name']}
-"
-                        f"- **量測日期：** `{data['record_date']}`
-"
-                        f"- **血壓數值：** 收縮壓 **{data['systolic']}** / 舒張壓 **{data['diastolic']}** mmHg
-"
-                        f"- **脈搏心跳：** **{data['pulse']}** 次/分
-"
-                        f"- **空腹血糖：** **{data['blood_sugar']}** mg/dL
-"
+                    confirm_lines = [
+                        f"- **病患姓名：** {data['patient_name']}",
+                        f"- **量測日期：** `{data['record_date']}`",
+                        f"- **血壓數值：** 收縮壓 **{data['systolic']}** / 舒張壓 **{data['diastolic']}** mmHg",
+                        f"- **脈搏心跳：** **{data['pulse']}** 次/分",
+                        f"- **空腹血糖：** **{data['blood_sugar']}** mg/dL",
                         f"- **自述症狀：** {data['symptoms']}"
-                    )
+                    ]
+                    st.markdown(NL.join(confirm_lines))
                     b_ok, b_cancel = st.columns(2)
                     with b_ok:
                         if st.button("✅ 確認無誤，正式送出", type="primary", use_container_width=True):
@@ -186,16 +187,15 @@ with tab_patient:
             )
             if not care_df.empty:
                 for _, crow in care_df.iterrows():
-                    msg_text = (
-                        f"💬 **護理師衛教關懷（{crow['reviewed_at']}｜{crow['reviewed_by']}）**
-
-"
-                        f"**衛教主題：** {crow['edu_template_title'] or '個別化照護建議'}
-
-"
+                    tpl_name = crow['edu_template_title'] or '個別化照護建議'
+                    care_lines = [
+                        f"💬 **護理師衛教關懷（{crow['reviewed_at']}｜{crow['reviewed_by']}）**",
+                        "",
+                        f"**衛教主題：** {tpl_name}",
+                        "",
                         f"**處置建議：** {crow['nurse_note']}"
-                    )
-                    st.info(msg_text)
+                    ]
+                    st.info(NL.join(care_lines))
 
             m_df = pd.read_sql_query(
                 """SELECT record_id, record_date AS 量測日期, systolic AS 收縮壓, diastolic AS 舒張壓,
@@ -318,10 +318,13 @@ with tab_nurse:
 
         st.divider()
 
-        # 下半部：選擇並觀測所有病患的量表數據（解決護理師無法選擇觀測一般病患的問題）
+        # 下半部：選擇並觀測所有病患的量表數據
         st.subheader("🔍 二、全病患健康量表觀測與主動關懷（可選擇任一病患）")
         all_p_df = pd.read_sql_query("SELECT * FROM patients ORDER BY patient_id", conn)
-        obs_options = {f"{r['patient_id']} - {r['name']}（{r['age']}歲｜{r['condition_type']}）": r['patient_id'] for _, r in all_p_df.iterrows()}
+        obs_options = {
+            f"{r['patient_id']} - {r['name']}（{r['age']}歲｜{r['condition_type']}）": r['patient_id']
+            for _, r in all_p_df.iterrows()
+        }
         obs_label = st.selectbox("請選擇要觀測的病患", list(obs_options.keys()), key="nurse_obs_select")
         obs_pid = obs_options[obs_label]
         obs_info = all_p_df[all_p_df["patient_id"] == obs_pid].iloc[0]
